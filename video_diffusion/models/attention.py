@@ -99,13 +99,13 @@ class SpatioTemporalTransformerModel(ModelMixin, ConfigMixin):
         clip_length = None
         is_video = hidden_states.ndim == 5
         if is_video:
-            clip_length = hidden_states.shape[2]
-            hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
-            encoder_hidden_states = encoder_hidden_states.repeat_interleave(clip_length, 0)
+            clip_length = hidden_states.shape[2]  #8
+            hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")   # torch.Size([16, 320, 64, 64])
+            encoder_hidden_states = encoder_hidden_states.repeat_interleave(clip_length, 0) # 16,77,768
         else:
             # To adapt to classifier-free guidance where encoder_hidden_states=2
             batch_size = hidden_states.shape[0]//encoder_hidden_states.shape[0]
-            encoder_hidden_states = encoder_hidden_states.repeat_interleave(batch_size, 0)
+            encoder_hidden_states = encoder_hidden_states.repeat_interleave(batch_size, 0)  
         *_, h, w = hidden_states.shape
         residual = hidden_states
 
@@ -121,7 +121,7 @@ class SpatioTemporalTransformerModel(ModelMixin, ConfigMixin):
         for block in self.transformer_blocks:
             hidden_states = block(
                 hidden_states, # [16, 4096, 320]
-                encoder_hidden_states=encoder_hidden_states, # ([1, 77, 768]
+                encoder_hidden_states=encoder_hidden_states, # ([16, 77, 768]
                 timestep=timestep,
                 clip_length=clip_length,
             )
@@ -196,7 +196,7 @@ class SpatioTemporalTransformerBlock(nn.Module):
 
         # 2. Cross-Attn
         if cross_attention_dim is not None:
-            self.attn2 = CrossAttention(
+            self.attn2 = CrossAttentionModify(
                 query_dim=dim,
                 cross_attention_dim=cross_attention_dim,
                 heads=num_attention_heads,
@@ -287,7 +287,7 @@ class SpatioTemporalTransformerBlock(nn.Module):
         )
         if self.only_cross_attention:
             kwargs.update(encoder_hidden_states=encoder_hidden_states)
-        if self.use_sparse_causal_attention:
+        if self.use_sparse_causal_attention:  # this is used
             kwargs.update(clip_length=clip_length)
         if 'SparseCausalAttention_index' in self.model_config.keys():
             kwargs.update(SparseCausalAttention_index = self.model_config['SparseCausalAttention_index'])
@@ -307,7 +307,7 @@ class SpatioTemporalTransformerBlock(nn.Module):
             hidden_states = (
                 self.attn2(
                     norm_hidden_states, # [16, 4096, 320]
-                    encoder_hidden_states=encoder_hidden_states, # [1, 77, 768]
+                    encoder_hidden_states=encoder_hidden_states, # [16, 77, 768]
                     attention_mask=attention_mask,
                 )
                 + hidden_states
@@ -413,6 +413,66 @@ class SparseCausalAttention(CrossAttention):
                 hidden_states = self._sliced_attention(
                     query, key, value, hidden_states.shape[1], dim, attention_mask
                 )
+
+        # linear proj
+        hidden_states = self.to_out[0](hidden_states)
+
+        # dropout
+        hidden_states = self.to_out[1](hidden_states)
+        return hidden_states
+    
+    
+    
+class CrossAttentionModify(CrossAttention):  # just to play around @sanoojan
+    def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None):
+        batch_size, sequence_length, _ = hidden_states.shape
+
+        encoder_hidden_states = encoder_hidden_states
+
+        if self.group_norm is not None:
+            hidden_states = self.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        query = self.to_q(hidden_states)
+        dim = query.shape[-1]
+        query = self.reshape_heads_to_batch_dim(query)
+
+        if self.added_kv_proj_dim is not None:  
+            key = self.to_k(hidden_states)
+            value = self.to_v(hidden_states)
+            encoder_hidden_states_key_proj = self.add_k_proj(encoder_hidden_states)
+            encoder_hidden_states_value_proj = self.add_v_proj(encoder_hidden_states)
+
+            key = self.reshape_heads_to_batch_dim(key)
+            value = self.reshape_heads_to_batch_dim(value)
+            encoder_hidden_states_key_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_key_proj)
+            encoder_hidden_states_value_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_value_proj)
+
+            key = torch.concat([encoder_hidden_states_key_proj, key], dim=1)
+            value = torch.concat([encoder_hidden_states_value_proj, value], dim=1)
+        else:       # this is used
+            encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states #torch.Size([8, 77, 768])
+            key = self.to_k(encoder_hidden_states) # torch.Size([8, 77, 320])
+            value = self.to_v(encoder_hidden_states)
+
+            key = self.reshape_heads_to_batch_dim(key)
+            value = self.reshape_heads_to_batch_dim(value)
+
+        if attention_mask is not None:
+            if attention_mask.shape[-1] != query.shape[1]:
+                target_length = query.shape[1]
+                attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
+                attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
+
+        # attention, what we cannot get enough of
+        if self._use_memory_efficient_attention_xformers:
+            hidden_states = self._memory_efficient_attention_xformers(query, key, value, attention_mask)
+            # Some versions of xformers return output in fp32, cast it back to the dtype of the input
+            hidden_states = hidden_states.to(query.dtype)
+        else:
+            if self._slice_size is None or query.shape[0] // self._slice_size == 1:
+                hidden_states = self._attention(query, key, value, attention_mask)
+            else:
+                hidden_states = self._sliced_attention(query, key, value, sequence_length, dim, attention_mask)
 
         # linear proj
         hidden_states = self.to_out[0](hidden_states)

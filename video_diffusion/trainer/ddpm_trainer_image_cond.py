@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from transformers import CLIPTextModel, CLIPTokenizer
+from video_diffusion.models.modules import FrozenCLIPImageEmbedder
 
 from diffusers.models import AutoencoderKL
 from diffusers.schedulers import (
@@ -16,13 +17,14 @@ from diffusers.schedulers import (
     PNDMScheduler,
 )
 from ..models.unet_3d_condition import UNetPseudo3DConditionModel
-from video_diffusion.pipelines.stable_diffusion import SpatioTemporalStableDiffusionPipeline
+from video_diffusion.pipelines.stable_diffusion_image_cond import SpatioTemporalStableDiffusionPipeline
 
 class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
     def __init__(
         self,
         vae: AutoencoderKL,
         text_encoder: CLIPTextModel,
+        visual_encoder: FrozenCLIPImageEmbedder,
         tokenizer: CLIPTokenizer,
         unet: UNetPseudo3DConditionModel,
         scheduler: Union[
@@ -38,6 +40,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         super().__init__(
             vae,
             text_encoder,
+            visual_encoder,
             tokenizer,
             unet,
             scheduler,
@@ -48,16 +51,20 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
     def step(self, 
              batch: dict = dict()):
         if 'class_images' in batch:
-            self.step2d(batch["class_images"], batch["class_prompt_ids"])
+            self.step2d(batch["class_images"],batch["class_cond_images"], batch["class_prompt_ids"])
         self.vae.eval()
         self.text_encoder.eval()
+        # self.visual_encoder.eval()
         self.unet.train()
+        self.visual_encoder.train()
         if self.prior_preservation is not None:
             print('Use prior_preservation loss')
             self.unet2d.eval()
 
         # Convert images to latent space
         images = batch["images"].to(dtype=self.weight_dtype)
+        cond_images=rearrange(batch["cond_images"], "b c f h w -> (b f) c h w")
+        # cond_images=cond_images.to(dtype=self.weight_dtype)
         b = images.shape[0]
         images = rearrange(images, "b c f h w -> (b f) c h w")
         latents = self.vae.encode(images).latent_dist.sample() # shape=torch.Size([8, 3, 512, 512]), min=-1.00, max=0.98, var=0.21, -0.96875
@@ -78,10 +85,18 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
 
         # Get the text embedding for conditioning
-        encoder_hidden_states = self.text_encoder(batch["prompt_ids"])[0]
+        # encoder_hidden_states = self.text_encoder(batch["prompt_ids"])[0] # shape b,77,768
+        # batch["cond_images"] shape [1,3,8,512,512] 
+        # rearrange to [8,3,512,512]
+        
+        visual_hidden_states = self.visual_encoder(cond_images)
+        visual_hidden_states= torch.mean(visual_hidden_states,dim=0)
+        visual_hidden_states= visual_hidden_states.repeat(77, 1)
+        visual_hidden_states=torch.unsqueeze(visual_hidden_states,0)
+        
 
         # Predict the noise residual
-        model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+        model_pred = self.unet(noisy_latents, timesteps, visual_hidden_states).sample
 
         # Get the target for loss depending on the prediction type
         if self.scheduler.config.prediction_type == "epsilon":
@@ -94,7 +109,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
         if self.prior_preservation is not None:
-            model_pred_2d = self.unet2d(noisy_latents[:, :, 0], timesteps, encoder_hidden_states).sample
+            model_pred_2d = self.unet2d(noisy_latents[:, :, 0], timesteps, visual_hidden_states).sample
             loss = (
                 loss
                 + F.mse_loss(model_pred[:, :, 0].float(), model_pred_2d.float(), reduction="mean")
@@ -110,19 +125,22 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         
         return loss
     
-    def step2d(self, class_images, prompt_ids
+    def step2d(self, class_images,cond_images, prompt_ids
              ):
         
         self.vae.eval()
         self.text_encoder.eval()
+        # self.visual_encoder.eval()
         self.unet.train()
-        
+        self.visual_encoder.train()
         if self.prior_preservation is not None:
             self.unet2d.eval()
 
 
         # Convert images to latent space
         images = class_images.to(dtype=self.weight_dtype)
+        cond_images=rearrange(cond_images, "b c f h w -> (b f) c h w")
+        cond_images = cond_images.to(dtype=self.weight_dtype)
         b = images.shape[0]
         images = rearrange(images, "b c f h w -> (b f) c h w")
         latents = self.vae.encode(images).latent_dist.sample() # shape=torch.Size([8, 3, 512, 512]), min=-1.00, max=0.98, var=0.21, -0.96875
@@ -143,10 +161,11 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
 
         # Get the text embedding for conditioning
-        encoder_hidden_states = self.text_encoder(prompt_ids)[0]
+        # encoder_hidden_states = self.text_encoder(prompt_ids)[0]
+        visual_hidden_states = self.visual_encoder(cond_images)[0]
 
         # Predict the noise residual
-        model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+        model_pred = self.unet(noisy_latents, timesteps, visual_hidden_states).sample
 
         # Get the target for loss depending on the prediction type
         if self.scheduler.config.prediction_type == "epsilon":
@@ -159,7 +178,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
         if self.prior_preservation is not None:
-            model_pred_2d = self.unet2d(noisy_latents[:, :, 0], timesteps, encoder_hidden_states).sample
+            model_pred_2d = self.unet2d(noisy_latents[:, :, 0], timesteps, visual_hidden_states).sample
             loss = (
                 loss
                 + F.mse_loss(model_pred[:, :, 0].float(), model_pred_2d.float(), reduction="mean")

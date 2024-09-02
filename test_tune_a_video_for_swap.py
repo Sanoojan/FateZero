@@ -1,6 +1,6 @@
 import os,copy
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import inspect
 from typing import Optional, Dict
 import click
@@ -18,7 +18,7 @@ from diffusers import (
     DDPMScheduler,
     DDIMScheduler,
 )
-from diffusers.optimization import get_scheduler
+
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.pipeline_utils import DiffusionPipeline
 
@@ -34,9 +34,9 @@ from video_diffusion.common.logger import get_logger_config_path
 from video_diffusion.common.image_util import log_train_samples, log_train_reg_samples
 from video_diffusion.common.instantiate_from_config import instantiate_from_config, get_obj_from_str
 from video_diffusion.pipelines.validation_loop_image_cond import SampleLogger
+from transformers.models.clip.configuration_clip import CLIPConfig,CLIPVisionConfig
 
 
-# use cuda device 4
 
 
 def collate_fn(examples):
@@ -79,7 +79,7 @@ def clip_tensorize_frames(frames):
     return frames
 
 
-def train(
+def test(
     config: str,
     pretrained_model_path: str,
     dataset_config: Dict,
@@ -140,9 +140,10 @@ def train(
     text_encoder = CLIPTextModel.from_pretrained(
         pretrained_model_path,
         subfolder="text_encoder",
-    )
-    
-    visual_encoder = FrozenCLIPImageEmbedder() # # add a learnable projection head from our method
+    ) 
+    visual_encoder = FrozenCLIPImageEmbedder()
+    visual_encoder_weights = torch.load(os.path.join(pretrained_model_path, "visual_encoder", "pytorch_model.bin"))
+    visual_encoder.load_state_dict(visual_encoder_weights)
 
     vae = AutoencoderKL.from_pretrained(
         pretrained_model_path,
@@ -188,63 +189,13 @@ def train(
     text_encoder.requires_grad_(False)
     # visual_encoder.requires_grad_(False)  # already require grad is true in the class for mapping
 
-    # Start of config trainable parameters in Unet and optimizer
-    trainable_modules = ("attn_temporal", ".to_q")
-    if train_temporal_conv:
-        trainable_modules += ("conv_temporal",)
-    for name, module in unet.named_modules():
-        if name.endswith(trainable_modules):
-            for params in module.parameters():
-                params.requires_grad = True
+
+    
                 
 
     if gradient_checkpointing:
         print('enable gradient checkpointing in the training and testing')    
         unet.enable_gradient_checkpointing()
-
-    if scale_lr:
-        learning_rate = (
-            learning_rate * gradient_accumulation_steps * train_batch_size * accelerator.num_processes
-        )
-
-    # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
-    if use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-            )
-
-        optimizer_class = bnb.optim.AdamW8bit
-    else:
-        optimizer_class = torch.optim.AdamW
-
-    # optimize both unet and visual_encoder
-    params_to_optimize = list(unet.parameters()) + list(visual_encoder.parameters())
-    
-    num_trainable_modules = 0
-    num_trainable_params = 0 
-    num_unet_params = 0
-    for params in params_to_optimize:
-        num_unet_params += params.numel()
-        if params.requires_grad == True:
-            num_trainable_modules +=1
-            num_trainable_params += params.numel()
-    
-    logger.info(f"Num of trainable modules: {num_trainable_modules}")        
-    logger.info(f"Num of trainable params: {num_trainable_params/(1024*1024):.2f} M")
-    logger.info(f"Num of unet params: {num_unet_params/(1024*1024):.2f} M ")
-    
-    
-    params_to_optimize = list(filter(lambda p: p.requires_grad, params_to_optimize))
-    optimizer = optimizer_class(
-        params_to_optimize,
-        lr=learning_rate,
-        betas=(adam_beta1, adam_beta2),
-        weight_decay=adam_weight_decay,
-        eps=adam_epsilon,
-    )
 
 
     prompt_ids = tokenizer(
@@ -282,18 +233,11 @@ def train(
     if 'class_data_root' in train_dataset_config:
         log_train_reg_samples(save_path=train_sample_save_path.replace('train_samples', 'class_data_samples'), train_dataloader=train_dataloader)
 
-    # Prepare learning rate scheduler in accelerate config
-    lr_scheduler = get_scheduler(
-        lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=lr_warmup_steps * gradient_accumulation_steps,
-        num_training_steps=train_steps * gradient_accumulation_steps,
-    )
 
-    unet,visual_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet,visual_encoder, optimizer, train_dataloader, lr_scheduler
+    unet,visual_encoder, train_dataloader = accelerator.prepare(
+        unet,visual_encoder, train_dataloader
     )
-    accelerator.register_for_checkpointing(lr_scheduler)
+  
 
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
@@ -315,27 +259,7 @@ def train(
     if accelerator.is_main_process:
         accelerator.init_trackers("video")  # , config=vars(args))
     
-    # Start of config trainer
-    trainer = instantiate_from_config(
-        trainer_pipeline_config,
-        vae=vae,
-        text_encoder=text_encoder,
-        visual_encoder=visual_encoder,
-        tokenizer=tokenizer,
-        unet=unet,
-        scheduler= DDPMScheduler.from_pretrained(
-            pretrained_model_path,
-            subfolder="scheduler",
-            ),
-        # training hyperparams
-        weight_dtype=weight_dtype,
-        accelerator=accelerator,
-        optimizer=optimizer,
-        max_grad_norm=max_grad_norm,
-        lr_scheduler=lr_scheduler,
-        prior_preservation=None
-    )
-    trainer.print_pipeline(logger)
+ 
     # Train!
     total_batch_size = train_batch_size * accelerator.num_processes * gradient_accumulation_steps
     logger.info("***** Running training *****")
@@ -346,20 +270,13 @@ def train(
         f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
     )
     logger.info(f"  Gradient Accumulation steps = {gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {train_steps}")
+    
     step = 0
     # End of config trainer
     
     if editing_config is not None and accelerator.is_main_process:
         validation_sample_logger = SampleLogger(**editing_config, logdir=logdir)
 
-
-    # Only show the progress bar once on each machine.
-    progress_bar = tqdm(
-        range(step, train_steps),
-        disable=not accelerator.is_local_main_process,
-    )
-    progress_bar.set_description("Steps")
 
     def make_data_yielder(dataloader):
         while True:
@@ -372,27 +289,20 @@ def train(
     
     assert(train_dataset.video_len == 1), "Only support overfiting on a single video"
 
-        
-    while step < train_steps:
-        batch = next(train_data_yielder)
-        """************************* start of an iteration*******************************"""
-        loss = trainer.step(batch)
-        # torch.cuda.empty_cache()
-        
-        """************************* end of an iteration*******************************"""
-        # Checks if the accelerator has performed an optimization step behind the scenes
-        if accelerator.sync_gradients:
-            progress_bar.update(1)
-            step += 1
 
-            if accelerator.is_main_process:
+    batch = next(train_data_yielder)
+
+    if accelerator.sync_gradients:
+
+        if accelerator.is_main_process:
+            with torch.no_grad():
 
                 if validation_sample_logger is not None and (step % validation_steps == 0 or step==1):
                     unet.eval()
                     visual_encoder.eval()
 
                     val_image = rearrange(batch["images"].to(dtype=weight_dtype), "b c f h w -> (b f) c h w")
-                    
+
                     # Unet is changing in different iteration; we should invert online
                     if editing_config.get('use_invertion_latents', False):
                         # Precompute the latents for this video to align the initial latents in training and test
@@ -421,7 +331,7 @@ def train(
                             rearrange(batch["images"].to(dtype=weight_dtype), "b c f h w -> (b f) c h w"), 
                             batch_size = 1 , 
                             num_images_per_prompt = 1,  # not sure how to use it
-                            text_embeddings = text_embeddings
+                            text_embeddings = visual_embedding
                             )
                         batch['ddim_init_latents'] = batch['latents_all_step'][-1]
                     else:
@@ -434,36 +344,21 @@ def train(
                         pipeline=pipeline,
                         device=accelerator.device,
                         step=step,
-                        latents = batch['ddim_init_latents'],
+                        latents = batch['ddim_init_latents'], #torch.Size([1, 4, 8, 64, 64])
                     )
                     torch.cuda.empty_cache()
                     unet.train()
                     visual_encoder.train()
 
-                if step % checkpointing_steps== 0  or step==1:
-                    accepts_keep_fp32_wrapper = "keep_fp32_wrapper" in set(
-                        inspect.signature(accelerator.unwrap_model).parameters.keys()
-                    )
-                    extra_args = {"keep_fp32_wrapper": True} if accepts_keep_fp32_wrapper else {}
-                    pipeline_save = get_obj_from_str(test_pipeline_config["target"]).from_pretrained(
-                        pretrained_model_path,
-                        unet=accelerator.unwrap_model(unet, **extra_args),
-                        visual_encoder=accelerator.unwrap_model(visual_encoder),
-                    )
-                    checkpoint_save_path = os.path.join(logdir, f"checkpoint_{step}")
-                    pipeline_save.save_pretrained(checkpoint_save_path)
-
-        logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-        progress_bar.set_postfix(**logs)
-        accelerator.log(logs, step=step)
+                
 
     accelerator.end_training()
 
 
 @click.command()
-@click.option("--config", type=str, default="config/tune/faceswap_andy_with_im.yaml")
+@click.option("--config", type=str, default="config/tune/faceswap_andy_with_im_infer.yaml")
 def run(config):
-    train(config=config, **OmegaConf.load(config))
+    test(config=config, **OmegaConf.load(config))
 
 
 if __name__ == "__main__":

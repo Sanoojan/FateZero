@@ -54,6 +54,7 @@ def annotate_image(image: Image.Image, text: str, font_size: int = 15):
     return annotate_image_with_font(image=image, text=text, font=font)
 
 
+
 def make_grid(images: Sequence[Image.Image], rows=None, cols=None) -> Image.Image:
     if isinstance(images[0], np.ndarray):
         images = [Image.fromarray(i) for i in images]
