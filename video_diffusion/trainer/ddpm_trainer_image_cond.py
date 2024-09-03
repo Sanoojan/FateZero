@@ -90,9 +90,11 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         # rearrange to [8,3,512,512]
         
         visual_hidden_states = self.visual_encoder(cond_images)
-        visual_hidden_states= torch.mean(visual_hidden_states,dim=0)
-        visual_hidden_states= visual_hidden_states.repeat(77, 1)
-        visual_hidden_states=torch.unsqueeze(visual_hidden_states,0)
+        # randomly choose one frame to represent the visual_hidden_states
+        random_index=torch.randint(0,visual_hidden_states.shape[0],(1,))
+        visual_hidden_states=visual_hidden_states[random_index]
+        # visual_hidden_states= visual_hidden_states.repeat(77, 1)
+        # visual_hidden_states=torch.unsqueeze(visual_hidden_states,0)
         
 
         # Predict the noise residual

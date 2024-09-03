@@ -1,6 +1,6 @@
 import os,copy
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import inspect
 from typing import Optional, Dict
 import click
@@ -413,15 +413,15 @@ def train(
                         im_path=train_dataset_config['image']
                         edit_image = load_image_from_path(im_path, 224, 224, accelerator.device)
                         visual_embedding = visual_encoder(edit_image.unsqueeze(0))[0]
-                        uncond_from_text = text_embeddings[0]
-                        visual_embedding = visual_embedding.repeat(uncond_from_text.shape[0], 1)
+                        uncond_from_text = text_embeddings[0].mean(0, keepdim=True)
+                        # visual_embedding = visual_embedding.repeat(uncond_from_text.shape[0], 1)
                         visual_embedding = torch.stack([ uncond_from_text,visual_embedding], dim=0)
                         
                         batch['latents_all_step'] = pipeline.prepare_latents_ddim_inverted(
                             rearrange(batch["images"].to(dtype=weight_dtype), "b c f h w -> (b f) c h w"), 
                             batch_size = 1 , 
                             num_images_per_prompt = 1,  # not sure how to use it
-                            text_embeddings = text_embeddings
+                            text_embeddings = visual_embedding
                             )
                         batch['ddim_init_latents'] = batch['latents_all_step'][-1]
                     else:

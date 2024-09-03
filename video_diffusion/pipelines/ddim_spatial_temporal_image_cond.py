@@ -284,9 +284,9 @@ class DDIMSpatioTemporalStableDiffusionPipeline(SpatioTemporalStableDiffusionPip
         if edit_image is not None:
             # load edit_image
             edit_image = load_image_from_path(edit_image, 224, 224, device)
-            uncond_cond=text_embeddings[0]
+            uncond_cond=text_embeddings[0].mean(0, keepdim=True)
             visual_embeddings = self.visual_encoder(edit_image.unsqueeze(0))[0]
-            visual_embeddings = visual_embeddings.repeat(text_embeddings.shape[1], 1)
+            # visual_embeddings = visual_embeddings.repeat(text_embeddings.shape[1], 1)
             visual_embeddings = torch.stack([ uncond_cond,visual_embeddings], dim=0)
         else:
             visual_embeddings = None
@@ -304,7 +304,7 @@ class DDIMSpatioTemporalStableDiffusionPipeline(SpatioTemporalStableDiffusionPip
             ddim_latents_all_step = self.prepare_latents_ddim_inverted(
                 image, batch_size, num_images_per_prompt, 
                 # text_embeddings.dtype, device, 
-                text_embeddings,   # checking normal text embeddings  chage later to embedding @ sanoojan
+                embedding,   # checking normal text embeddings  chage later to embedding @ sanoojan
                 generator,
             )
             latents = ddim_latents_all_step[-1]

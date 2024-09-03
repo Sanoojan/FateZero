@@ -331,7 +331,7 @@ def test(
                             rearrange(batch["images"].to(dtype=weight_dtype), "b c f h w -> (b f) c h w"), 
                             batch_size = 1 , 
                             num_images_per_prompt = 1,  # not sure how to use it
-                            text_embeddings = visual_embedding
+                            text_embeddings = text_embeddings
                             )
                         batch['ddim_init_latents'] = batch['latents_all_step'][-1]
                     else:

@@ -427,6 +427,9 @@ class CrossAttentionModify(CrossAttention):  # just to play around @sanoojan
     def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None):
         batch_size, sequence_length, _ = hidden_states.shape
 
+        # print("Encoder hidden states shape", encoder_hidden_states.shape)
+        # if encoder_hidden_states.shape[1]==77:
+        #     print("Encoder hidden states shape", encoder_hidden_states.shape)
         encoder_hidden_states = encoder_hidden_states
 
         if self.group_norm is not None:

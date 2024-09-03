@@ -1,6 +1,6 @@
 # CUDA_VISIBLE_DEVICES=3 python train_tune_a_video.py --config config/tune/jeep.yaml
 # There is no obvious difference between v1-4 and v1-4, we just choose to tune v1-5 randomly at the beginning of this project.
-pretrained_model_path: "result/tune/faceswap_andy_with_im_240829-114148/checkpoint_1000"
+pretrained_model_path: "result/tune/faceswap_andy_with_im_240902-222104/checkpoint_8000"
 
 dataset_config:
     path: "data/shape/faceswap_andy"
