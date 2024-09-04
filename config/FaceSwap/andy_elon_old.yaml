@@ -1,11 +1,11 @@
 # CUDA_VISIBLE_DEVICES=4 accelerate launch test_fatezero.py --config config/FaceSwap/andy_elon.yaml
 
-# pretrained_model_path: "result/tune/faceswap_andy_with_im_240903-133936/checkpoint_10000"
 pretrained_model_path: "./ckpt/stable-diffusion-v1-5"
+
 
 dataset_config:
     path: "data/FaceSwap/Andy_elon_512"
-    prompt: "a photo of a human face"  # check where this is used
+    prompt: "a public speaker speaking with mic "  # check where this is used
     n_sample_frame: 8
     # n_sample_frame: 22
     sampling_rate: 1
@@ -21,15 +21,13 @@ editing_config:
     use_inversion_attention: True
     guidance_scale: 7.5
     editing_prompts: [
-        a photo of man speaking with microphone,
-        a photo of elun musk face,
-        a sketch of a barak obama face,
+        # source prompt
+        a man talking on the microphone,
 
-    ]
-    editing_images: [
-        data/shape/faceswap_andy/0.png,
-        /home/sanoojan/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/12.png,
-        /home/sanoojan/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/11.png,
+        # foreground texture style
+        Elon musk,
+        Iron Man,
+        Barak Obama,
     ]
     p2p_config:
         0: 

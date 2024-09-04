@@ -93,8 +93,10 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         # randomly choose one frame to represent the visual_hidden_states
         random_index=torch.randint(0,visual_hidden_states.shape[0],(1,))
         visual_hidden_states=visual_hidden_states[random_index]
-        # visual_hidden_states= visual_hidden_states.repeat(77, 1)
-        # visual_hidden_states=torch.unsqueeze(visual_hidden_states,0)
+        # breakpoint()
+        visual_hidden_states= visual_hidden_states[0].repeat(77, 1)
+        visual_hidden_states=torch.unsqueeze(visual_hidden_states,0)
+        # breakpoint()
         
 
         # Predict the noise residual

@@ -31,8 +31,8 @@ editing_config:
     ]
     editing_images: [
         data/shape/faceswap_andy/0.png,
-        /share/data/drive_3/Sanoojan/needed/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/12.png,
-        /share/data/drive_3/Sanoojan/needed/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/11.png,
+        /home/sanoojan/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/12.png,
+        /home/sanoojan/Paint_for_swap/examples/Thesis_check_4/Outs/source_cropped/11.png,
     ]
     clip_length: "${..dataset_config.n_sample_frame}"
     sample_seeds: [12734]
