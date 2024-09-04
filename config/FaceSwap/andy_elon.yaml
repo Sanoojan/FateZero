@@ -1,7 +1,7 @@
 # CUDA_VISIBLE_DEVICES=4 accelerate launch test_fatezero.py --config config/FaceSwap/andy_elon.yaml
 
-# pretrained_model_path: "result/tune/faceswap_andy_with_im_240903-133936/checkpoint_10000"
-pretrained_model_path: "./ckpt/stable-diffusion-v1-5"
+pretrained_model_path: "result/tune/faceswap_andy_with_im_240903-133936/checkpoint_10000"
+# pretrained_model_path: "./ckpt/stable-diffusion-v1-5"
 
 dataset_config:
     path: "data/FaceSwap/Andy_elon_512"
@@ -23,7 +23,7 @@ editing_config:
     editing_prompts: [
         a photo of man speaking with microphone,
         a photo of elun musk face,
-        a sketch of a barak obama face,
+        a photo of a human face,
 
     ]
     editing_images: [

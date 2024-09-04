@@ -196,7 +196,7 @@ class SpatioTemporalTransformerBlock(nn.Module):
 
         # 2. Cross-Attn
         if cross_attention_dim is not None:
-            self.attn2 = CrossAttentionModify(
+            self.attn2 = CrossAttention(
                 query_dim=dim,
                 cross_attention_dim=cross_attention_dim,
                 heads=num_attention_heads,
@@ -423,63 +423,63 @@ class SparseCausalAttention(CrossAttention):
     
     
     
-class CrossAttentionModify(CrossAttention):  # just to play around @sanoojan
-    def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None):
-        batch_size, sequence_length, _ = hidden_states.shape
+# class CrossAttentionModify(CrossAttention):  # just to play around @sanoojan
+#     def forward(self, hidden_states, encoder_hidden_states=None, attention_mask=None):
+#         batch_size, sequence_length, _ = hidden_states.shape
 
-        # print("Encoder hidden states shape", encoder_hidden_states.shape)
-        # if encoder_hidden_states.shape[1]==77:
-        #     print("Encoder hidden states shape", encoder_hidden_states.shape)
-        encoder_hidden_states = encoder_hidden_states
+#         # print("Encoder hidden states shape", encoder_hidden_states.shape)
+#         # if encoder_hidden_states.shape[1]==77:
+#         #     print("Encoder hidden states shape", encoder_hidden_states.shape)
+#         encoder_hidden_states = encoder_hidden_states
 
-        if self.group_norm is not None:
-            hidden_states = self.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+#         if self.group_norm is not None:
+#             hidden_states = self.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
-        query = self.to_q(hidden_states)
-        dim = query.shape[-1]
-        query = self.reshape_heads_to_batch_dim(query)
+#         query = self.to_q(hidden_states)
+#         dim = query.shape[-1]
+#         query = self.reshape_heads_to_batch_dim(query)
 
-        if self.added_kv_proj_dim is not None:  
-            key = self.to_k(hidden_states)
-            value = self.to_v(hidden_states)
-            encoder_hidden_states_key_proj = self.add_k_proj(encoder_hidden_states)
-            encoder_hidden_states_value_proj = self.add_v_proj(encoder_hidden_states)
+#         if self.added_kv_proj_dim is not None:  
+#             key = self.to_k(hidden_states)
+#             value = self.to_v(hidden_states)
+#             encoder_hidden_states_key_proj = self.add_k_proj(encoder_hidden_states)
+#             encoder_hidden_states_value_proj = self.add_v_proj(encoder_hidden_states)
 
-            key = self.reshape_heads_to_batch_dim(key)
-            value = self.reshape_heads_to_batch_dim(value)
-            encoder_hidden_states_key_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_key_proj)
-            encoder_hidden_states_value_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_value_proj)
+#             key = self.reshape_heads_to_batch_dim(key)
+#             value = self.reshape_heads_to_batch_dim(value)
+#             encoder_hidden_states_key_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_key_proj)
+#             encoder_hidden_states_value_proj = self.reshape_heads_to_batch_dim(encoder_hidden_states_value_proj)
 
-            key = torch.concat([encoder_hidden_states_key_proj, key], dim=1)
-            value = torch.concat([encoder_hidden_states_value_proj, value], dim=1)
-        else:       # this is used
-            encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states #torch.Size([8, 77, 768])
-            key = self.to_k(encoder_hidden_states) # torch.Size([8, 77, 320])
-            value = self.to_v(encoder_hidden_states)
+#             key = torch.concat([encoder_hidden_states_key_proj, key], dim=1)
+#             value = torch.concat([encoder_hidden_states_value_proj, value], dim=1)
+#         else:       # this is used
+#             encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states #torch.Size([8, 77, 768])
+#             key = self.to_k(encoder_hidden_states) # torch.Size([8, 77, 320])
+#             value = self.to_v(encoder_hidden_states)
 
-            key = self.reshape_heads_to_batch_dim(key)
-            value = self.reshape_heads_to_batch_dim(value)
+#             key = self.reshape_heads_to_batch_dim(key)
+#             value = self.reshape_heads_to_batch_dim(value)
 
-        if attention_mask is not None:
-            if attention_mask.shape[-1] != query.shape[1]:
-                target_length = query.shape[1]
-                attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
-                attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
+#         if attention_mask is not None:
+#             if attention_mask.shape[-1] != query.shape[1]:
+#                 target_length = query.shape[1]
+#                 attention_mask = F.pad(attention_mask, (0, target_length), value=0.0)
+#                 attention_mask = attention_mask.repeat_interleave(self.heads, dim=0)
 
-        # attention, what we cannot get enough of
-        if self._use_memory_efficient_attention_xformers:
-            hidden_states = self._memory_efficient_attention_xformers(query, key, value, attention_mask)
-            # Some versions of xformers return output in fp32, cast it back to the dtype of the input
-            hidden_states = hidden_states.to(query.dtype)
-        else:
-            if self._slice_size is None or query.shape[0] // self._slice_size == 1:
-                hidden_states = self._attention(query, key, value, attention_mask)
-            else:
-                hidden_states = self._sliced_attention(query, key, value, sequence_length, dim, attention_mask)
+#         # attention, what we cannot get enough of
+#         if self._use_memory_efficient_attention_xformers:
+#             hidden_states = self._memory_efficient_attention_xformers(query, key, value, attention_mask)
+#             # Some versions of xformers return output in fp32, cast it back to the dtype of the input
+#             hidden_states = hidden_states.to(query.dtype)
+#         else:
+#             if self._slice_size is None or query.shape[0] // self._slice_size == 1:
+#                 hidden_states = self._attention(query, key, value, attention_mask)
+#             else:
+#                 hidden_states = self._sliced_attention(query, key, value, sequence_length, dim, attention_mask)
 
-        # linear proj
-        hidden_states = self.to_out[0](hidden_states)
+#         # linear proj
+#         hidden_states = self.to_out[0](hidden_states)
 
-        # dropout
-        hidden_states = self.to_out[1](hidden_states)
-        return hidden_states
+#         # dropout
+#         hidden_states = self.to_out[1](hidden_states)
+#         return hidden_states
