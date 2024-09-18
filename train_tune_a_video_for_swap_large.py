@@ -1,6 +1,6 @@
 import os,copy
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import inspect
 from typing import Optional, Dict
 import click
@@ -69,11 +69,13 @@ def collate_fn(examples):
         "prompt_ids": torch.cat([example["prompt_ids"] for example in examples], dim=0),
         "images": torch.stack([example["images"] for example in examples]),
         "cond_images": torch.stack([example["cond_images"] for example in examples]),
+        "folder": examples[0]["folder"],
     }
     if "class_images" in examples[0]:
         batch["class_prompt_ids"] = torch.cat([example["class_prompt_ids"] for example in examples], dim=0)
         batch["class_images"] =  torch.stack([example["class_images"] for example in examples])
         batch["class_cond_images"] =  torch.stack([example["class_cond_images"] for example in examples])
+        batch["class_folder_index"] = examples[0]["class_folder_index"]
     return batch
 
 
@@ -115,6 +117,7 @@ def train(
     test_pipeline_config: Optional[Dict] = dict(),
     trainer_pipeline_config: Optional[Dict] = dict(),
     gradient_accumulation_steps: int = 1,
+    resume: bool=False,
     seed: Optional[int] = None,
     mixed_precision: Optional[str] = "fp16",
     enable_xformers: bool = True,
@@ -168,6 +171,12 @@ def train(
     )
     
     visual_encoder = FrozenCLIPImageEmbedder()
+    # try:
+    #     visual_encoder_weights = torch.load(os.path.join(pretrained_model_path, "visual_encoder", "pytorch_model.bin"))
+    #     visual_encoder.load_state_dict(visual_encoder_weights)
+    # except:
+    #     print("Visual encoder weights not found")
+
 
     vae = AutoencoderKL.from_pretrained(
         pretrained_model_path,
@@ -222,6 +231,11 @@ def train(
             for params in module.parameters():
                 params.requires_grad = True
                 
+                
+    #check train all
+    for name, module in unet.named_modules():
+        for params in module.parameters():
+            params.requires_grad = True          
 
     if gradient_checkpointing:
         print('enable gradient checkpointing in the training and testing')    
@@ -400,6 +414,12 @@ def train(
         
     while step < train_steps:
         batch = next(train_data_yielder)
+        
+        if batch['images'].shape!=torch.Size([1, 3, 8, 512, 512]):
+            print(f"Batch shape is {batch['images'].shape}")
+            print(f"Batch folder is {batch['folder']}")
+            continue
+        
         """************************* start of an iteration*******************************"""
         loss = trainer.step(batch)
         # torch.cuda.empty_cache()
@@ -412,7 +432,7 @@ def train(
 
             if accelerator.is_main_process:
 
-                if validation_sample_logger is not None and (step % validation_steps == 0 or step==1):
+                if validation_sample_logger is not None and (step % validation_steps == 0 ):
                     unet.eval()
                     visual_encoder.eval()
 
@@ -438,7 +458,9 @@ def train(
                         im_path=train_dataset_config['image']
                         # edit_image = load_image_from_path(im_path, 224, 224, accelerator.device)
                         
-                        edit_image = batch["cond_images"][0,:,0]
+                        # edit_image = batch["cond_images"][0,:,0]
+                        edit_image = batch["cond_images"][0,:]
+                        
                         visual_embedding = visual_encoder(edit_image.unsqueeze(0))[0]
                         uncond_from_text = text_embeddings[0]
                         visual_embedding = visual_embedding.repeat(uncond_from_text.shape[0], 1)
@@ -488,7 +510,7 @@ def train(
 
 
 @click.command()
-@click.option("--config", type=str, default="config/tune/faceswap_train_full.yaml")
+@click.option("--config", type=str, default="config/tune/faceswap_train_full_CelebVHQ.yaml")
 def run(config):
     train(config=config, **OmegaConf.load(config))
 

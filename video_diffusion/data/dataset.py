@@ -4,13 +4,25 @@ import numpy as np
 from PIL import Image
 from einops import rearrange
 from pathlib import Path
-
+import cv2
 import torch
 from torch.utils.data import Dataset
 
 from .transform import short_size_scale, random_crop, center_crop, offset_crop
 from ..common.image_util import IMAGE_EXTENSION
 import natsort  
+import albumentations as A
+import torchvision
+
+def get_tensor_clip(normalize=True, toTensor=True):
+    transform_list = []
+    if toTensor:
+        transform_list += [torchvision.transforms.ToTensor()]
+
+    if normalize:
+        transform_list += [torchvision.transforms.Normalize((0.48145466, 0.4578275, 0.40821073),
+                                                (0.26862954, 0.26130258, 0.27577711))]
+    return torchvision.transforms.Compose(transform_list)
 
 class ImageSequenceDataset(Dataset):
     def __init__(
@@ -344,6 +356,20 @@ class ImageSequenceDatasetMulti(Dataset):
         self.sampling_rate = sampling_rate
         self.image_mode=image_mode
 
+        self.random_trans=A.Compose([
+            A.Resize(height=512,width=512),
+            A.RandomCrop(height=400,width=400),
+            A.Resize(height=224,width=224),
+            A.HorizontalFlip(p=0.5),
+            A.Rotate(limit=20),
+            A.Blur(p=0.3),
+            A.ElasticTransform(p=0.3), 
+            # A.GaussNoise(p=0.3),# newly added from this line
+            # A.HueSaturationValue(p=0.3),
+            # A.ISONoise(p=0.3),
+            # A.Solarize(p=0.3),
+            ])
+
         # Define stride behavior (using stride to sample long videos)
         self.stride = stride if stride > 0 else max(self.n_images_in_folders)
 
@@ -379,16 +405,28 @@ class ImageSequenceDatasetMulti(Dataset):
         return_batch = {}
         frame_indices = self.get_frame_indices(video_index, folder_index)
         frames = [self.load_frame(i, folder_index) for i in frame_indices]
-        clip_frames = frames.copy()
+        # clip_frames = frames.copy()
 
         frames = self.transform(frames)
-        clip_frames = self.clip_transform(clip_frames)
+        # if frames.shape[-2]!=512:
+        #     print("Error")
+        #     breakpoint()
+        # select any random image in folder index
+        sel_num=np.random.randint(0,self.n_images_in_folders[folder_index])
+        sel_path=os.path.join(self.paths[folder_index], self.image_folders[folder_index][sel_num])
+        img_p_np=cv2.imread(sel_path)
+        img_p_np = cv2.cvtColor(img_p_np, cv2.COLOR_BGR2RGB)
+        ref_img=self.random_trans(image=img_p_np)["image"]
+        ref_image_tensor=Image.fromarray(ref_img)
+        ref_image_tensor=get_tensor_clip()(ref_image_tensor)
+        # clip_frames = self.clip_transform(clip_frames)
         
         return_batch.update(
             {
                 "images": frames,
                 "prompt_ids": self.prompt_ids,
-                "cond_images": clip_frames
+                "cond_images": ref_image_tensor,
+                "folder": self.paths[folder_index]
             }
         )
 
@@ -398,7 +436,7 @@ class ImageSequenceDatasetMulti(Dataset):
             frames = [self.load_class_frame(i) for i in class_indices]
             return_batch["class_images"] = self.tensorize_frames(frames)
             return_batch["class_prompt_ids"] = self.class_prompt_ids
-            return_batch["class_cond_images"] = self.clip_tensorize_frames(clip_frames)
+            return_batch["class_cond_images"] = self.clip_tensorize_frames(ref_image_tensor)
 
         return return_batch
     

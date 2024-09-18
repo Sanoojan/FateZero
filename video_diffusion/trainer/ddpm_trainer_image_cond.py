@@ -63,7 +63,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
 
         # Convert images to latent space
         images = batch["images"].to(dtype=self.weight_dtype)
-        cond_images=rearrange(batch["cond_images"], "b c f h w -> (b f) c h w")
+        # cond_images=rearrange(batch["cond_images"], "b c f h w -> (b f) c h w")
         # cond_images=cond_images.to(dtype=self.weight_dtype)
         b = images.shape[0]
         images = rearrange(images, "b c f h w -> (b f) c h w")
@@ -89,6 +89,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
         # batch["cond_images"] shape [1,3,8,512,512] 
         # rearrange to [8,3,512,512]
         
+        cond_images=batch["cond_images"]  # only one image sample
         visual_hidden_states = self.visual_encoder(cond_images)
         # randomly choose one frame to represent the visual_hidden_states
         random_index=torch.randint(0,visual_hidden_states.shape[0],(1,))
@@ -143,7 +144,7 @@ class DDPMTrainer(SpatioTemporalStableDiffusionPipeline):
 
         # Convert images to latent space
         images = class_images.to(dtype=self.weight_dtype)
-        cond_images=rearrange(cond_images, "b c f h w -> (b f) c h w")
+        # cond_images=rearrange(cond_images, "b c f h w -> (b f) c h w")
         cond_images = cond_images.to(dtype=self.weight_dtype)
         b = images.shape[0]
         images = rearrange(images, "b c f h w -> (b f) c h w")
