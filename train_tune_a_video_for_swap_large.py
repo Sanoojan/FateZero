@@ -1,6 +1,6 @@
 import os,copy
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 import inspect
 from typing import Optional, Dict
 import click
@@ -141,7 +141,7 @@ def train(
     train_dataset_config = copy.deepcopy(dataset_config)
     time_string = get_time_string()
     if logdir is None:
-        logdir = config.replace('config', 'result').replace('.yml', '').replace('.yaml', '')
+        logdir = config.replace('config', 'Outputs/Outputs').replace('.yml', '').replace('.yaml', '')
     logdir += f"_{time_string}"
 
 
@@ -510,7 +510,7 @@ def train(
 
 
 @click.command()
-@click.option("--config", type=str, default="config/tune/faceswap_train_full_CelebVHQ.yaml")
+@click.option("--config", type=str, default="config/tune/faceswap_train_full_CelebVHQ_with_face_coord_random_sampling_rate.yaml")
 def run(config):
     train(config=config, **OmegaConf.load(config))
 
