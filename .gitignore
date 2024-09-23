@@ -174,3 +174,4 @@ tags
 # RL pipelines may produce mp4 outputs
 *.mp4
 Outputs/Outputs
+mem_cap.py
