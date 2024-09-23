@@ -86,6 +86,7 @@ class FrozenCLIPImageEmbedder(CLIPPreTrainedModel):
         self.vision_model = CLIPVisionModel.from_pretrained(version)
         self.final_ln = LayerNorm(768)
         self.map_1024_to_768 = nn.Linear(1024, 768)
+        self.ID_proj_out=nn.Linear(512, 768)
         self.mapper = Transformer(
                 1,
                 1024,
@@ -105,6 +106,8 @@ class FrozenCLIPImageEmbedder(CLIPPreTrainedModel):
         for param in self.final_ln.parameters():
             param.requires_grad = True
         for param in self.map_1024_to_768.parameters():
+            param.requires_grad = True
+        for param in self.ID_proj_out.parameters():
             param.requires_grad = True
 
     def forward(self, image):

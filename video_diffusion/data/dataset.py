@@ -349,6 +349,8 @@ class ImageSequenceDatasetMulti(Dataset):
         if Meta_path is not None:
             #Read the json file
             self.meta_data = json.load(open(Meta_path))
+            self.appearance_mapping = self.meta_data["meta_info"]["appearance_mapping"]
+            self.action_mapping = self.meta_data["meta_info"]["action_mapping"]
         
         self.paths= [ os.path.join(path, folder) for folder in os.listdir(path)]
         # self.paths = paths  # List of folder paths
@@ -375,6 +377,10 @@ class ImageSequenceDatasetMulti(Dataset):
             # A.ISONoise(p=0.3),
             # A.Solarize(p=0.3),
             ])
+    
+        # self.background_trans=A.Compose([
+        #     A.resize(height=224,width=224)
+        # ])  
 
         # Define stride behavior (using stride to sample long videos)
         self.stride = stride if stride > 0 else max(self.n_images_in_folders)
@@ -425,6 +431,9 @@ class ImageSequenceDatasetMulti(Dataset):
         folder_name=self.paths[folder_index]
         folder_name=folder_name.split('/')[-1]
         
+        bbox=None
+        Full_prompt=None
+        
         if self.meta_data is not None:
             if folder_name in self.meta_data["clips"]:
                 Vid_details=self.meta_data["clips"][folder_name]
@@ -432,13 +441,38 @@ class ImageSequenceDatasetMulti(Dataset):
                 
                 # example bbox {'top': 0.0, 'bottom': 0.6815, 'left': 0.2755, 'right': 0.6589}
                 # crop ref_img
+                img_p_background=img_p_np.copy()
                 img_p_np = img_p_np[int(bbox['top']*img_p_np.shape[0]):int(bbox['bottom']*img_p_np.shape[0]),int(bbox['left']*img_p_np.shape[1]):int(bbox['right']*img_p_np.shape[1])]
-        
                 
+                img_p_background[int(bbox['top']*img_p_background.shape[0]):int(bbox['bottom']*img_p_background.shape[0]),int(bbox['left']*img_p_background.shape[1]):int(bbox['right']*img_p_background.shape[1])] = 0
+                
+                
+                
+                #Ex: {"M2Ohb0FAaJU_1": {"ytb_id": "M2Ohb0FAaJU", "duration": {"start_sec": 81.62, "end_sec": 86.17}, "bbox": {"top": 0.0, "bottom": 0.8815, "left": 0.1964, "right": 0.6922}, "attributes": {"appearance": [0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0], "action": [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0], "emotion": {"sep_flag": false, "labels": "neutral"}}
+                appearance_list=Vid_details["attributes"]["appearance"]
+                appearance_sentence=[self.appearance_mapping[i] for i in range(len(appearance_list)) if appearance_list[i]==1] 
+                # join the list with space
+                appearance_sentence=' '.join(appearance_sentence)
+                
+                action_list=Vid_details["attributes"]["action"]
+                action_sentence=[self.action_mapping[i] for i in range(len(action_list)) if action_list[i]==1]
+                action_sentence=' '.join(action_sentence)
+                
+                Full_sentence=" with "+appearance_sentence + " and " + action_sentence
+                Full_prompt="a video of a person"+Full_sentence+ " in background"
 
         ref_img=self.random_trans(image=img_p_np)["image"]
+        
+        
         ref_image_tensor=Image.fromarray(ref_img)
         ref_image_tensor=get_tensor_clip()(ref_image_tensor)
+        
+        
+        background_img=cv2.resize(img_p_background,(224,224))
+        #resize to 224,224
+        
+        background_img=Image.fromarray(background_img)
+        background_img=get_tensor_clip()(background_img)
         # clip_frames = self.clip_transform(clip_frames)
         
         return_batch.update(
@@ -446,7 +480,10 @@ class ImageSequenceDatasetMulti(Dataset):
                 "images": frames,
                 "prompt_ids": self.prompt_ids,
                 "cond_images": ref_image_tensor,
-                "folder": folder_name
+                "folder": folder_name,
+                "Full_prompt": Full_prompt,
+                "bbox": bbox,
+                "background_img": background_img
             }
         )
 

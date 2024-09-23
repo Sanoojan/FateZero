@@ -27,6 +27,62 @@ from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 from ..models.unet_3d_condition import UNetPseudo3DConditionModel
 
+from Libraries.Face_models.encoders.model_irse import Backbone
+import torch.nn as nn
+import torchvision.transforms.functional as TF 
+
+def un_norm_clip(x1):
+    x = x1*1.0 # to avoid changing the original tensor or clone() can be used
+    reduce=False
+    if len(x.shape)==3:
+        x = x.unsqueeze(0)
+        reduce=True
+    x[:,0,:,:] = x[:,0,:,:] * 0.26862954 + 0.48145466
+    x[:,1,:,:] = x[:,1,:,:] * 0.26130258 + 0.4578275
+    x[:,2,:,:] = x[:,2,:,:] * 0.27577711 + 0.40821073
+    
+    if reduce:
+        x = x.squeeze(0)
+    return x
+
+def un_norm(x):
+    return (x+1.0)/2.0
+
+class IDLoss(nn.Module):
+    def __init__(self,opts=None,multiscale=False):
+        super(IDLoss, self).__init__()
+        print('Loading ResNet ArcFace')
+        self.opts = opts 
+        self.multiscale = multiscale
+        self.face_pool_1 = torch.nn.AdaptiveAvgPool2d((256, 256))
+        self.facenet = Backbone(input_size=112, num_layers=50, drop_ratio=0.6, mode='ir_se')
+        # self.facenet=iresnet100(pretrained=False, fp16=False) # changed by sanoojan
+        
+        self.facenet.load_state_dict(torch.load("Other_dependencies/arcface/model_ir_se50.pth"))
+        
+        self.face_pool_2 = torch.nn.AdaptiveAvgPool2d((112, 112))
+        self.facenet.eval()
+        
+        self.set_requires_grad(False)
+            
+    def set_requires_grad(self, flag=True):
+        for p in self.parameters():
+            p.requires_grad = flag
+    
+    def extract_feats(self, x,clip_img=True):
+        # breakpoint()
+        if clip_img:
+            x = un_norm_clip(x)
+            x = TF.normalize(x, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        x = self.face_pool_1(x)  if x.shape[2]!=256 else  x # (1) resize to 256 if needed
+        x = x[:, :, 35:223, 32:220]  # (2) Crop interesting region
+        x = self.face_pool_2(x) # (3) resize to 112 to fit pre-trained model
+        # breakpoint()
+        x_feats = self.facenet(x, multi_scale=self.multiscale )
+        
+        # x_feats = self.facenet(x) # changed by sanoojan
+        return x_feats
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -55,6 +111,7 @@ class SpatioTemporalStableDiffusionPipeline(DiffusionPipeline):  # check here @ 
     ):
         super().__init__()
         # self.visual_encoder = visual_encoder
+        self.ID_encoder=IDLoss().to('cuda')
 
         if hasattr(scheduler.config, "steps_offset") and scheduler.config.steps_offset != 1:
             deprecation_message = (

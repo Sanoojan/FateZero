@@ -12,6 +12,8 @@ from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 
 from .stable_diffusion_image_cond import SpatioTemporalStableDiffusionPipeline
 
+
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -181,6 +183,8 @@ class DDIMSpatioTemporalStableDiffusionPipeline(SpatioTemporalStableDiffusionPip
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
         edit_image: Optional[Union[str, List[str]]] = None,
+        cond_prior_embedding: torch.FloatTensor = None,
+        source_image_index: int = 0,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
@@ -283,16 +287,33 @@ class DDIMSpatioTemporalStableDiffusionPipeline(SpatioTemporalStableDiffusionPip
             )[0]       
         if edit_image is not None:
             # load edit_image
-            edit_image = load_image_from_path(edit_image, 224, 224, device)
-            uncond_cond=text_embeddings[0]
-            visual_embeddings = self.visual_encoder(edit_image.unsqueeze(0))[0]
-            visual_embeddings = visual_embeddings.repeat(text_embeddings.shape[1], 1)
-            visual_embeddings = torch.stack([ uncond_cond,visual_embeddings], dim=0)
+            
+            
+            
+            edit_image = load_image_from_path(edit_image, 224, 224, device).unsqueeze(0)
+            
+            ID_features=self.ID_encoder.extract_feats(edit_image)[0]
+            ID_features=self.visual_encoder.ID_proj_out(ID_features)
+            
+            visual_hidden_states = self.visual_encoder(edit_image) 
+            visual_hidden_states = visual_hidden_states[0]
+            ID_features=(10.0*ID_features+1.0*visual_hidden_states)/11.0
+            condition_embedding =cond_prior_embedding
+            condition_embedding[1,source_image_index,:]=ID_features[0]
+           
+
+            # embedding = torch.stack([ uncond_from_text,cond_text], dim=0)
+            
+
+            
+            # visual_embeddings = self.visual_encoder(edit_image.unsqueeze(0))[0]
+            # visual_embeddings = visual_embeddings.repeat(text_embeddings.shape[1], 1)
+            # visual_embeddings = torch.stack([ uncond_cond,visual_embeddings], dim=0)
         else:
-            visual_embeddings = None
+            condition_embedding = None
         
         # embedding= text_embeddings if text_embeddings is not None else visual_embeddings
-        embedding=visual_embeddings if visual_embeddings is not None else text_embeddings
+        embedding=condition_embedding if condition_embedding is not None else text_embeddings
         
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)

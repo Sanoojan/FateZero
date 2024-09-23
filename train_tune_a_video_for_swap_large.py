@@ -37,7 +37,61 @@ from video_diffusion.common.image_util import log_train_samples, log_train_reg_s
 from video_diffusion.common.instantiate_from_config import instantiate_from_config, get_obj_from_str
 from video_diffusion.pipelines.validation_loop_image_cond import SampleLogger
 
+from Libraries.Face_models.encoders.model_irse import Backbone
+import torch.nn as nn
+import torchvision.transforms.functional as TF 
 
+def un_norm_clip(x1):
+    x = x1*1.0 # to avoid changing the original tensor or clone() can be used
+    reduce=False
+    if len(x.shape)==3:
+        x = x.unsqueeze(0)
+        reduce=True
+    x[:,0,:,:] = x[:,0,:,:] * 0.26862954 + 0.48145466
+    x[:,1,:,:] = x[:,1,:,:] * 0.26130258 + 0.4578275
+    x[:,2,:,:] = x[:,2,:,:] * 0.27577711 + 0.40821073
+    
+    if reduce:
+        x = x.squeeze(0)
+    return x
+
+def un_norm(x):
+    return (x+1.0)/2.0
+
+class IDLoss(nn.Module):
+    def __init__(self,opts=None,multiscale=False):
+        super(IDLoss, self).__init__()
+        print('Loading ResNet ArcFace')
+        self.opts = opts 
+        self.multiscale = multiscale
+        self.face_pool_1 = torch.nn.AdaptiveAvgPool2d((256, 256))
+        self.facenet = Backbone(input_size=112, num_layers=50, drop_ratio=0.6, mode='ir_se')
+        # self.facenet=iresnet100(pretrained=False, fp16=False) # changed by sanoojan
+        
+        self.facenet.load_state_dict(torch.load("Other_dependencies/arcface/model_ir_se50.pth"))
+        
+        self.face_pool_2 = torch.nn.AdaptiveAvgPool2d((112, 112))
+        self.facenet.eval()
+        
+        self.set_requires_grad(False)
+            
+    def set_requires_grad(self, flag=True):
+        for p in self.parameters():
+            p.requires_grad = flag
+    
+    def extract_feats(self, x,clip_img=True):
+        # breakpoint()
+        if clip_img:
+            x = un_norm_clip(x)
+            x = TF.normalize(x, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        x = self.face_pool_1(x)  if x.shape[2]!=256 else  x # (1) resize to 256 if needed
+        x = x[:, :, 35:223, 32:220]  # (2) Crop interesting region
+        x = self.face_pool_2(x) # (3) resize to 112 to fit pre-trained model
+        # breakpoint()
+        x_feats = self.facenet(x, multi_scale=self.multiscale )
+        
+        # x_feats = self.facenet(x) # changed by sanoojan
+        return x_feats
 # use cuda device 4
 
 def save_image_row(tensor, save_path="Debug/output_image.png"):
@@ -69,7 +123,10 @@ def collate_fn(examples):
         "prompt_ids": torch.cat([example["prompt_ids"] for example in examples], dim=0),
         "images": torch.stack([example["images"] for example in examples]),
         "cond_images": torch.stack([example["cond_images"] for example in examples]),
+        "background_img": torch.stack([example["background_img"] for example in examples]),
         "folder": examples[0]["folder"],
+        "Full_prompt": examples[0]["Full_prompt"],
+        "bbox": examples[0]["bbox"],
     }
     if "class_images" in examples[0]:
         batch["class_prompt_ids"] = torch.cat([example["class_prompt_ids"] for example in examples], dim=0)
@@ -144,7 +201,7 @@ def train(
         logdir = config.replace('config', 'Outputs/Outputs').replace('.yml', '').replace('.yaml', '')
     logdir += f"_{time_string}"
 
-
+    n_sample_frame=dataset_config['n_sample_frame']
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         mixed_precision=mixed_precision,
@@ -187,6 +244,7 @@ def train(
         os.path.join(pretrained_model_path, "unet"), model_config=model_config
     )
 
+    ID_encoder=IDLoss().to(accelerator.device)
     
     if 'target' not in test_pipeline_config:
         test_pipeline_config['target'] = 'video_diffusion.pipelines.stable_diffusion.SpatioTemporalStableDiffusionPipeline'
@@ -220,6 +278,7 @@ def train(
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
+    ID_encoder.requires_grad_(False)
     # visual_encoder.requires_grad_(False)  # already require grad is true in the class for mapping
 
     # Start of config trainable parameters in Unet and optimizer
@@ -415,7 +474,7 @@ def train(
     while step < train_steps:
         batch = next(train_data_yielder)
         
-        if batch['images'].shape!=torch.Size([1, 3, 8, 512, 512]):
+        if batch['images'].shape!=torch.Size([1, 3, n_sample_frame, 512, 512]):
             print(f"Batch shape is {batch['images'].shape}")
             print(f"Batch folder is {batch['folder']}")
             continue
@@ -448,29 +507,60 @@ def train(
                         visual_encoder.eval()
                         unet.eval()
                         
-                        text_embeddings = pipeline._encode_prompt(
-                                train_dataset.prompt, 
-                                device = accelerator.device, 
-                                num_images_per_prompt = 1, 
-                                do_classifier_free_guidance = True, 
-                                negative_prompt=None
-                        )
-                        im_path=train_dataset_config['image']
+                        
+                        
                         # edit_image = load_image_from_path(im_path, 224, 224, accelerator.device)
                         
                         # edit_image = batch["cond_images"][0,:,0]
-                        edit_image = batch["cond_images"][0,:]
+                        with torch.no_grad():
                         
-                        visual_embedding = visual_encoder(edit_image.unsqueeze(0))[0]
-                        uncond_from_text = text_embeddings[0]
-                        visual_embedding = visual_embedding.repeat(uncond_from_text.shape[0], 1)
-                        visual_embedding = torch.stack([ uncond_from_text,visual_embedding], dim=0)
+                            Full_prompt=batch["Full_prompt"]
+                            Full_prompt=Full_prompt.replace("_"," ")
+                            
+                            
+                            tokens=tokenizer.tokenize(Full_prompt)
+                            person_index=tokens.index("person</w>")+1
+                            background_index=tokens.index("background</w>")+1
+
+                            cond_images=batch["cond_images"]  # only one image sample
+                            random_index=torch.randint(0,cond_images.shape[0],(1,))
+                            ID_features=ID_encoder.extract_feats(cond_images)[0].unsqueeze(0)
+                            ID_features=visual_encoder.ID_proj_out(ID_features)
+                            
+                            visual_hidden_states = visual_encoder(cond_images) 
+                            visual_hidden_states=visual_hidden_states[random_index]
+                            ID_features=(10.0*ID_features+1.0*visual_hidden_states)/11.0
+                            
                         
+                            background_img=batch["background_img"] 
+                            background_hidden_states=visual_encoder(background_img)
+                            background_hidden_states=background_hidden_states[random_index]
+
+                            uncond_from_text,cond_text = pipeline._encode_prompt(
+                                    Full_prompt, 
+                                    device = accelerator.device, 
+                                    num_images_per_prompt = 1, 
+                                    do_classifier_free_guidance = True, 
+                                    negative_prompt=None
+                            )
+
+
+                            # encoder_hidden_states = text_encoder(prompt_ids)[0]
+                            #replace the person and background embeddings 
+                            cond_text[person_index,:]=ID_features[0][0]
+                            cond_text[background_index,:]=background_hidden_states[0]
+
+                            
+                            # visual_embedding = visual_encoder(edit_image.unsqueeze(0))[0]
+                            # uncond_from_text = text_embeddings[0]
+                            # visual_embedding = visual_embedding.repeat(uncond_from_text.shape[0], 1)
+                            embedding = torch.stack([ uncond_from_text,cond_text], dim=0)
+                            
                         batch['latents_all_step'] = pipeline.prepare_latents_ddim_inverted(
                             rearrange(batch["images"].to(dtype=weight_dtype), "b c f h w -> (b f) c h w"), 
                             batch_size = 1 , 
                             num_images_per_prompt = 1,  # not sure how to use it
-                            text_embeddings = visual_embedding
+                            text_embeddings = embedding
                             )
                         batch['ddim_init_latents'] = batch['latents_all_step'][-1]
                     else:
@@ -484,6 +574,8 @@ def train(
                         device=accelerator.device,
                         step=step,
                         latents = batch['ddim_init_latents'],
+                        cond_prior_embedding=embedding,
+                        source_image_index=person_index
                     )
                     torch.cuda.empty_cache()
                     unet.train()
@@ -510,7 +602,7 @@ def train(
 
 
 @click.command()
-@click.option("--config", type=str, default="config/tune/faceswap_train_full_CelebVHQ_with_face_coord_random_sampling_rate.yaml")
+@click.option("--config", type=str, default="config/tune/faceswap_train_full_CelebVHQ_with_face_coord_random_sampling_rate_placeholder_text_cond.yaml")
 def run(config):
     train(config=config, **OmegaConf.load(config))
 

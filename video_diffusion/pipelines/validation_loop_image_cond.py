@@ -91,6 +91,8 @@ class SampleLogger:
         image: Union[torch.FloatTensor, PIL.Image.Image] = None,
         latents: torch.FloatTensor = None,
         uncond_embeddings_list: List[torch.FloatTensor] = None,
+        cond_prior_embedding: torch.FloatTensor = None,
+        source_image_index: int = 0
     ):
         torch.cuda.empty_cache()
         samples_all = []
@@ -126,6 +128,8 @@ class SampleLogger:
                         guidance_scale=self.guidance_scale,
                         num_images_per_prompt=1,
                         edit_image=image_path,
+                        cond_prior_embedding=cond_prior_embedding,
+                        source_image_index=source_image_index,
                         # used in null inversion
                         latents = latents,
                         uncond_embeddings_list = uncond_embeddings_list,

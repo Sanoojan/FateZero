@@ -175,3 +175,5 @@ tags
 *.mp4
 Outputs/Outputs
 mem_cap.py
+
+Other_dependencies/arcface/model_ir_se50.pth
